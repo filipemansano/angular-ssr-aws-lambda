@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  angular-ssr-cms
+Transform:
+  - AWS::Serverless-2016-10-31
+
+Globals:
+  Api:
+    BinaryMediaTypes:
+      - "*~1*"
+
+Resources:
+
+  APIG:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Dev
+      
+
+  IamRoleLambdaExecution:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      Path: /
+      RoleName: angular-ssr-lambda-role
+      AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - lambda.amazonaws.com
+              Action:
+                - 'sts:AssumeRole'
+      Policies:
+        - PolicyName: angular-ssr-lambda
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource:
+                  - 'arn:aws:lambda:sa-east-1:786557629847:*'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - '*'
+         
+  AngularSSRAPI:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/angular-ssr
+      Handler: lambda.ssrserverless
+      Runtime: nodejs14.x
+      Layers:
+       - arn:aws:lambda:sa-east-1:786557629847:layer:angularSSR:1
+      Architectures:
+        - x86_64
+      MemorySize: 2048
+      Timeout: 10
+      Description: Angular SSR API
+      Role: !GetAtt IamRoleLambdaExecution.Arn
+      Environment:
+        Variables:
+          DIST: './'
+      Events:
+        AngularSSREndpointApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref APIG
+            Path: /{any+}
+            Method: ANY
+        WarmingSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)
+            Input: '{"warmer":true}'
+
+  ######## End: API Resources ##########
+
+Outputs:
+  ApiGatewayEndpt:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${APIG}.execute-api.${AWS::Region}.amazonaws.com/Api/"
