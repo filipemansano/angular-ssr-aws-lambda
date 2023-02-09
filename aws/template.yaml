@@ -40,7 +40,7 @@ Resources:
                 Action:
                   - 'lambda:InvokeFunction'
                 Resource:
-                  - 'arn:aws:lambda:sa-east-1:786557629847:*'
+                  - !Sub "arn:aws:lambda:sa-east-1:${AWS::AccountId}:*"
               - Effect: Allow
                 Action:
                   - 'logs:CreateLogGroup'
@@ -56,10 +56,10 @@ Resources:
       Handler: lambda.ssrserverless
       Runtime: nodejs14.x
       Layers:
-       - arn:aws:lambda:sa-east-1:786557629847:layer:angularSSR:1
+       - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:angularSSR:3"
       Architectures:
         - x86_64
-      MemorySize: 2048
+      MemorySize: 256
       Timeout: 10
       Description: Angular SSR API
       Role: !GetAtt IamRoleLambdaExecution.Arn
@@ -71,8 +71,8 @@ Resources:
           Type: Api
           Properties:
             RestApiId: !Ref APIG
-            Path: /{any+}
-            Method: ANY
+            Path: "/{proxy+}"
+            Method: GET
         WarmingSchedule:
           Type: Schedule
           Properties:
@@ -84,4 +84,4 @@ Resources:
 Outputs:
   ApiGatewayEndpt:
     Description: "API Gateway endpoint URL"
-    Value: !Sub "https://${APIG}.execute-api.${AWS::Region}.amazonaws.com/Api/"
+    Value: !Sub "https://${APIG}.execute-api.${AWS::Region}.amazonaws.com/Dev/"
