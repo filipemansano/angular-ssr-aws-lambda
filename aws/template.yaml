@@ -4,84 +4,34 @@ Description: >-
 Transform:
   - AWS::Serverless-2016-10-31
 
-Globals:
-  Api:
-    BinaryMediaTypes:
-      - "*~1*"
-
 Resources:
+  
+  ExpressApi:
+    Type: AWS::Serverless::HttpApi
 
-  APIG:
-    Type: AWS::Serverless::Api
-    Properties:
-      StageName: Dev
-      
-
-  IamRoleLambdaExecution:
-    Type: 'AWS::IAM::Role'
-    Properties:
-      Path: /
-      RoleName: angular-ssr-lambda-role
-      AssumeRolePolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-            - Effect: Allow
-              Principal:
-                Service:
-                  - lambda.amazonaws.com
-              Action:
-                - 'sts:AssumeRole'
-      Policies:
-        - PolicyName: angular-ssr-lambda
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - 'lambda:InvokeFunction'
-                Resource:
-                  - !Sub "arn:aws:lambda:sa-east-1:${AWS::AccountId}:*"
-              - Effect: Allow
-                Action:
-                  - 'logs:CreateLogGroup'
-                  - 'logs:CreateLogStream'
-                  - 'logs:PutLogEvents'
-                Resource:
-                  - '*'
-         
-  AngularSSRAPI:
+  AngularSSR:
     Type: AWS::Serverless::Function
     Properties:
-      CodeUri: ../dist/angular-ssr
-      Handler: lambda.ssrserverless
+      CodeUri: "../dist/angular-ssr"
+      Handler: lambda.handler
       Runtime: nodejs14.x
       Layers:
-       - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:angularSSR:3"
+       - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:angularSSR:4"
       Architectures:
         - x86_64
       MemorySize: 256
       Timeout: 10
-      Description: Angular SSR API
-      Role: !GetAtt IamRoleLambdaExecution.Arn
+      Description: Angular SSR
       Environment:
         Variables:
           DIST: './'
       Events:
-        AngularSSREndpointApi:
-          Type: Api
+        ProxyApiRoot:
+          Type: HttpApi
           Properties:
-            RestApiId: !Ref APIG
-            Path: "/{proxy+}"
-            Method: GET
-        WarmingSchedule:
-          Type: Schedule
-          Properties:
-            Schedule: rate(5 minutes)
-            Input: '{"warmer":true}'
-
-  ######## End: API Resources ##########
+            ApiId: !Ref ExpressApi
 
 Outputs:
-  ApiGatewayEndpt:
-    Description: "API Gateway endpoint URL"
-    Value: !Sub "https://${APIG}.execute-api.${AWS::Region}.amazonaws.com/Dev/"
+  ApiUrl:
+    Description: API URL
+    Value: !Sub https://${ExpressApi}.execute-api.${AWS::Region}.amazonaws.com/
