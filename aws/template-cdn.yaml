@@ -1,0 +1,100 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  angular-ssr-cdn
+Transform:
+  - AWS::Serverless-2016-10-31
+
+Parameters:
+  Api:
+    Type: String
+  HostedZone:
+    Type: String
+  Certificate:
+    Type: String
+  DomainName:
+    Type: String
+    Default: 'fmansano.com'
+
+Mappings:
+  EnvMap:
+    development:
+      SubDomain: dev
+    homologation:
+      SubDomain: hml
+    production:
+      SubDomain: app
+
+Resources:
+
+  #HostedZone:
+  #  Type: AWS::Route53::HostedZone
+  #  DeletionPolicy: Retain
+  #  Properties:
+  #    Name: !Ref DomainName
+  #    HostedZoneConfig: 
+  #      Comment: 'Hosted Zone for my AngularSSR domains'
+
+  #Certificate:
+  #  Type: AWS::CertificateManager::Certificate
+  #  Properties: 
+  #    DomainName: !Ref DomainName
+  #    ValidationMethod: DNS
+  #    DomainValidationOptions:
+  #      - DomainName: !Ref DomainName
+  #        HostedZoneId: !Ref HostedZone
+  #    SubjectAlternativeNames:
+  #      - !Join ['.', ['*', !Ref DomainName]]
+
+  CDN:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        IPV6Enabled: true
+        HttpVersion: http2
+        Comment: !Join ["--", [!Ref "AWS::StackName", "Cloud Front"]]
+        Aliases:
+          - !Join ['.', [!FindInMap [ EnvMap, !Ref StageName, SubDomain ], !Ref DomainName]]
+        ViewerCertificate:
+          AcmCertificateArn: !Sub "arn:aws:acm:us-east-1:${AWS::AccountId}:certificate/${Certificate}"
+          SslSupportMethod: "sni-only"
+          MinimumProtocolVersion: TLSv1.1_2016
+        Origins:
+          - Id: APiOrigin
+            DomainName: !Ref ${Api}
+            OriginPath: !Sub "/${StageName}"
+            CustomOriginConfig:
+              HTTPPort: 443
+              OriginProtocolPolicy: "https-only"
+        DefaultCacheBehavior:
+          TargetOriginId: ApiOrigin
+          Compress: true
+          ViewerProtocolPolicy: redirect-to-https
+          CachedMethods: ["GET", "OPTIONS", "HEAD"]
+          AllowedMethods: ["GET", "OPTIONS", "HEAD"]
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized
+
+        CustomErrorResponses:
+          - ErrorCode: 400
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 403
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 404
+            ErrorCachingMinTTL: 0
+          - ErrorCode: 500
+            ErrorCachingMinTTL: 0
+            
+  DNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId : !Ref HostedZone
+      Name: !Join ['.', [!FindInMap [ EnvMap, !Ref StageName, SubDomain ], !Ref DomainName]]
+      Type: CNAME
+      TTL: 300
+      ResourceRecords:
+        - !GetAtt CDN.DomainName
+
+Outputs:
+  FQDN:
+    Description: Domain Application
+    Value: !Join ['.', [!FindInMap [ EnvMap, !Ref StageName, SubDomain ], !Ref DomainName]]

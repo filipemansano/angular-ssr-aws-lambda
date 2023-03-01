@@ -1,13 +1,129 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  angular-ssr-cms
+  angular-ssr-app
 Transform:
   - AWS::Serverless-2016-10-31
 
+Parameters:
+  DeployRoleName:
+    Type: String
+    Default: 'serverless-deploy'
+  GitHubConnectionId:
+    Type: String
+  StageName:
+    Type: String
+    Description: Stage Name
+    AllowedValues:
+      - development
+      - homologation
+      - production
+  CodeBuildComputeType:
+    AllowedValues:
+      - BUILD_GENERAL1_SMALL
+      - BUILD_GENERAL1_MEDIUM
+      - BUILD_GENERAL1_LARGE
+    Default: BUILD_GENERAL1_SMALL
+    Type: String
+  CodeBuildEnvironmentType:
+    AllowedValues:
+      - LINUX_CONTAINER
+      - WINDOWS_CONTAINER
+    Default: LINUX_CONTAINER
+    Type: String
+  GitHubRepo:
+    Description: GitHub repo name
+    Type: String
+    Default: ''
+
+Conditions: 
+  IsDevelopment: !Equals [ !Ref StageName, 'development' ]
+  IsHomologation: !Equals [ !Ref StageName, 'homologation' ]
+  IsProduction: !Equals [ !Ref StageName, 'production' ]
+
+Mappings:
+  EnvMap:
+    development:
+      Branch: dev
+    homologation:
+      Branch: hml
+    production:
+      Branch: master
+
 Resources:
+
+  NodeServelessDependenciesLayers:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: nodejs-serverless-dependencies
+      Description: node modules with all dependencies to run webserver
+      ContentUri: "./layers"
+      CompatibleRuntimes:
+        - nodejs14.x
+      LicenseInfo: 'MIT'
+      RetentionPolicy: Retain
+    Metadata:
+      BuildMethod: nodejs14.x
   
-  ExpressApi:
-    Type: AWS::Serverless::HttpApi
+  DevelopmentAlias:
+    Condition: IsDevelopment
+    Type: AWS::Lambda::Alias
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: !Ref AngularSSR
+      FunctionVersion: $LATEST
+      Name: DevelopmentAlias
+  
+  HomologationVersion:
+    Condition: IsHomologation
+    Type: AWS::Lambda::Version
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: !Ref AngularSSR
+  
+  HomologationAlias:
+    Condition: IsHomologation
+    Type: AWS::Lambda::Alias
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: !Ref AngularSSR
+      FunctionVersion: !Select [7, !Split [ ":", !Ref HomologationVersion]]
+      Name: HomologationAlias
+
+  ProductionVersion:
+    Condition: IsProduction
+    Type: AWS::Lambda::Version
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: !Ref AngularSSR
+
+  ProductionAlias:
+    Condition: IsProduction
+    Type: AWS::Lambda::Alias
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      FunctionName: !Ref AngularSSR
+      FunctionVersion: !Select [7, !Split [ ":", !Ref ProductionVersion]]
+      Name: ProductionAlias
+
+  FunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
 
   AngularSSR:
     Type: AWS::Serverless::Function
@@ -15,8 +131,9 @@ Resources:
       CodeUri: "../dist/angular-ssr"
       Handler: lambda.handler
       Runtime: nodejs14.x
+      Role: !GetAtt FunctionExecutionRole.Arn
       Layers:
-       - !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:layer:angularSSR:4"
+       - !Ref NodeServelessDependenciesLayers
       Architectures:
         - x86_64
       MemorySize: 256
@@ -25,13 +142,253 @@ Resources:
       Environment:
         Variables:
           DIST: './'
-      Events:
-        ProxyApiRoot:
-          Type: HttpApi
-          Properties:
-            ApiId: !Ref ExpressApi
+  
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref StageName
+
+  LambdaIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref Api
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt AngularSSR.Arn
+      PayloadFormatVersion: "2.0"
+      RequestParameters:
+        "overwrite:path": "$request.path"
+
+  HTTPAPIRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref Api
+      RouteKey: $default
+      Target: !Join ["/", ["integrations", !Ref LambdaIntegration]]
+
+  APIInvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref AngularSSR
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${Api}/*
+
+  AngularAssets:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      AccessControl: PublicRead
+      BucketName: !Join ["--", [!Ref "AWS::StackName", "assets"]]
+
+  Artifacts:
+    Type: AWS::S3::Bucket
+    Properties:
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 30
+            Status: Enabled
+
+  BuildProjectRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: !Sub "Used in CodeBuild project. Created by CloudFormation ${AWS::StackId}"
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+              - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+                - codebuild.amazonaws.com
+        Version: '2012-10-17'
+      Path: /service-role/
+  
+  CodeBuildPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub codebuild-access-${AWS::StackName}
+      Roles:
+        - !Ref BuildProjectRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource:
+              - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*
+          - Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Effect: Allow
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${Artifacts}/*
+          - Action:
+              - s3:ListBucket
+            Effect: Allow
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${Artifacts}
+
+  BuildProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      ServiceRole: !GetAtt BuildProjectRole.Arn
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: aws/buildspec.yaml
+      Artifacts:
+        Type: CODEPIPELINE
+      TimeoutInMinutes: 5
+      Environment:
+        ComputeType: !Ref CodeBuildComputeType
+        Image: 'aws/codebuild/standard:2.0'
+        Type: !Ref CodeBuildEnvironmentType
+        EnvironmentVariables:
+          - Name: PACKAGE_BUCKET
+            Value: !Ref Artifacts
+
+  PipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: !Sub "Used by CodePipeline. Created by CloudFormation ${AWS::StackId}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - "codepipeline.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: codestar-connections
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "codestar-connections:UseConnection"
+                Resource: "*"
+        - PolicyName: s3-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "s3:DeleteObject"
+                  - "s3:GetObject"
+                  - "s3:GetObjectVersion"
+                  - "s3:PutObject"
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${Artifacts}/*
+              - Effect: Allow
+                Action:
+                  - "s3:ListBucket"
+                  - "s3:GetBucketPolicy"
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${Artifacts}
+        - PolicyName: codebuild-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "codebuild:StartBuild"
+                  - "codebuild:BatchGetBuilds"
+                Resource:
+                  - !GetAtt BuildProject.Arn
+        - PolicyName: deploy-cloudformation-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "cloudformation:DescribeStacks"
+                  - "cloudformation:CreateChangeSet"
+                  - "cloudformation:ExecuteChangeSet"
+                  - "cloudformation:DescribeChangeSet"
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AWS::StackName}/*
+        - PolicyName: deploy-iam-access
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "iam:PassRole"
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${DeployRoleName}
+
+  DeployStagePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub deploy-stage-access-${AWS::StackName}
+      Roles:
+        - !Ref DeployRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - s3:GetObject
+            Effect: Allow
+            Resource:
+              - !Sub arn:${AWS::Partition}:s3:::${Artifacts}/*
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      ArtifactStore:
+        Location: !Ref Artifacts
+        Type: S3
+      RoleArn: !GetAtt PipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHubSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Sub "arn:aws:codestar-connections:${AWS::Region}:${AWS::AccountId}:connection/${GitHubConnectionId}"
+                FullRepositoryId: !Ref GitHubRepo
+                BranchName: !FindInMap [ EnvMap, !Ref StageName, Branch ]
+                OutputArtifactFormat: "CODE_ZIP"
+              OutputArtifacts:
+                - Name: SourceArtifact
+        - Name: Build
+          Actions:
+            - Name: Build
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref BuildProject
+              InputArtifacts:
+                - Name: SourceArtifact
+              OutputArtifacts:
+                - Name: BuildArtifact
+        - Name: Deploy
+          Actions:
+            - Name: ExecuteChangeSet
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                ActionMode: CHANGE_SET_EXECUTE
+                StackName: !Sub "${AWS::StackName}"
+                ChangeSetName: !Sub a-${AWS::StackName}-Deploy
+              RunOrder: 1
 
 Outputs:
   ApiUrl:
     Description: API URL
-    Value: !Sub https://${ExpressApi}.execute-api.${AWS::Region}.amazonaws.com/
+    Value: !Sub https://${Api}.execute-api.${AWS::Region}.amazonaws.com/

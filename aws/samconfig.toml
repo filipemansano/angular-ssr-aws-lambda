@@ -6,6 +6,22 @@ stack_name = "angular-ssr"
 s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1ue3h25ilnbd9"
 s3_prefix = "angular-ssr"
 region = "sa-east-1"
+profile = "blaze"
 confirm_changeset = true
 capabilities = "CAPABILITY_NAMED_IAM"
+parameter_overrides = "StageName=\"development\"; GitHubRepo=\"angular-ssr-aws-lambda\"; GitHubConnectionId=\"0f320e2c-70c7-4d43-84f5-162d1395544c\";"
+image_repositories = []
+
+
+[cdn]
+[cdn.deploy]
+[cdn.deploy.parameters]
+stack_name = "angular-ssr-cdn"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1ue3h25ilnbd9"
+s3_prefix = "angular-ssr-cdn"
+region = "us-east-1"
+profile = "blaze"
+confirm_changeset = true
+capabilities = "CAPABILITY_NAMED_IAM"
+parameter_overrides = "StageName=\"development\"; Api=\"bza2lplvy4.execute-api.sa-east-1.amazonaws.com\" DomainName=\"fmansano.com\"; HostedZone=\"Z02275922LRZPZGIEESOS\"; Certificate=\"2227c5a1-73ce-4e28-9650-1fdca2bcb752\""
 image_repositories = []
